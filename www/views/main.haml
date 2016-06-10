@@ -1,0 +1,46 @@
+:sass
+
+  ul.workflows
+    li
+      margin: 3em 0
+
+  dl.indented
+    margin: 2em 0
+    dt.title
+      font-weight: bold
+    dd
+      margin-left: 2em
+    
+%h1 Workflows
+
+%p
+  The following workflows are installed in this system:
+
+%ul.workflows.clean_list
+  - Sinatra::RbbtRESTWorkflow::WORKFLOWS.each do |wf|
+    - next if wf.all_exports.empty?
+    %li
+      %h3
+        %a(href="/#{wf.to_s}")= wf.to_s
+
+      :documentation
+        #{wf.documentation[:description] || "No description available"}
+
+      = table :table_id => "#{wf.to_s} exported tasks", :footer => false do
+        - tsv = TSV.setup({}, :key_field => "Task", :fields => ["Description", "Examples"], :type => :list)
+        - task_documentation = IndiferentHash.setup wf.documentation[:tasks]
+        - wf.all_exports.each do |t,d|
+          - d = task_documentation[t] 
+          - if d and not d.empty?
+            - d.gsub!(/\n\n.*/,'')
+            - d.gsub!(/\n/,' ')
+          - else
+            - d = "No documentation"
+
+          - examples = wf.examples[t] ? wf.examples[t].length : "No"
+          - t = "<a href='/" << ([wf.to_s,t] * "/") << "'>#{t}<a/>" 
+          - tsv[t] = [d, examples]
+
+        - tsv
+
+

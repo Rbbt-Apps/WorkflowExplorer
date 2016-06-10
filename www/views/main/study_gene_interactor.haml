@@ -1,0 +1,53 @@
+- studies = Rbbt.studies.find(:lib).glob("*").sort.collect{|file| File.basename file}
+- studies = studies.select{|s| s !~ /lung/i}
+- databases = %w(go_bp go_cc go_mf kegg nature reactome pfam interpro biocarta)
+- databases = %w(nature)
+- threshold = 0.001
+- limit = 10
+
+- dir = '/tmp/study_gene_interactor'
+
+- kb = Graph::KnowledgeBase.new dir
+- kb.info["All"] = {:organism => "Hsa/jan2013"}
+
+- g = Graph.new([kb, $knowledge_base])
+- g.entities["Gene"] = []
+- g.entities["Study"] = []
+
+- study_genes = TSV.setup({}, :key_field => "Study", :fields => ["Ensembl Gene ID", "Significant"], :type => :double)
+- studies.each do |study|
+  - Study.setup(study)
+  - next unless study.has_genotypes?
+  - next if study.cohort.metagenotype.length > 30_000
+  - genotype_overview = study.job(:genotype_overview).run
+
+  - recurrent_genes = study.recurrent_genes
+  -# genes = Enrichment.job(:enrichment, "ICGC gene interactors", :database => "pina", :list => recurrent_genes, :organism => $default_genes).run.sort_by("p-value", true){|k,p| p.first.to_f}
+  - sorted_genes = recurrent_genes.sort_by{|gene| genotype_overview[gene]["Mutation significance"]}
+  - genes = Enrichment.job(:rank_enrichment, "ICGC gene interactors", :database => "pina", :list => sorted_genes, :organism => $default_genes).run.sort_by("p-value", true){|k,p| p.first.to_f}
+
+  - genes = genes[0..limit] if limit
+
+  - g.entities["Gene"].concat genes
+  - g.entities["Study"] << study
+  -# study_genes[study] = [all_genes, all_genes.collect{|g| genes.include?(g)? "YES" : "NO"}]
+  - study_genes[study] = [genes, genes.collect{|g| genes.include?(g)? "YES" : "NO"}]
+
+- gene_counts = Misc.counts(g.entities["Gene"])
+- g.entities["Gene"].uniq!
+- g.entities["Gene"] = g.entities["Gene"] &  gene_counts.select{|k,c| c > 3}.collect{|k,v| k} 
+
+-# kb.associations("mutated", study_genes, {})
+- kb.register("mutated", study_genes, {})
+- g.databases << "mutated"
+
+-#{{{ Ascetics
+- g.add_aesthetic :nodes, :shape, :entity_type, {"Study" => "HEXAGON", "GOTerm" => "RECTANGLE"}
+- g.add_aesthetic :nodes, :color, :entity_type, {"Study" => 'green', "GOTerm" => "YELLOW"}
+- g.add_aesthetic :nodes, :borderWidth, :id, gene_counts
+- g.add_aesthetic :edges, :weight, :Significant, {"YES" => 1, "NO" => 0.1}
+- g.add_aesthetic :edges, :opacity, :Significant, {"YES" => 1, "NO" => 0.1}
+- g.add_aesthetic :edges, :color, :database, {"mutated" => 'blue', 'go_bp' => 'yellow'}
+
+
+= tool :cytoscape, :graph => g, :id => "ICGC mutation overview", :static => false, :knowledgebase => dir 

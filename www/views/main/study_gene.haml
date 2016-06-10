@@ -1,0 +1,59 @@
+- studies = Rbbt.studies.find(:lib).glob("*").sort.collect{|file| File.basename file}
+- studies = studies.select{|s| s !~ /lung/i}
+- databases = %w(go_bp go_cc go_mf kegg nature reactome pfam interpro biocarta)
+- databases = %w(nature)
+- threshold = 0.001
+- limit = 10
+
+- dir = @step.file('study_gene')
+
+- kb = KnowledgeBase.new dir, "Hsa/jan2013"
+
+-# g = Graph.new([kb, $knowledge_base])
+
+- g = Cytoscape.new kb, "Hsa/jan2013"
+
+- g.entities["Gene"] = []
+- g.entities["Study"] = []
+
+- study_genes = TSV.setup({}, :key_field => "Study", :fields => ["Ensembl Gene ID", "Significant"], :type => :double)
+- study_significant_genes = TSV.setup({}, :key_field => "Study", :fields => ["Ensembl Gene ID", "Score"], :type => :double)
+- studies.each do |study|
+  - Study.setup(study)
+  - next unless study.has_genotypes?
+  - next if study.cohort.metagenotype.length > 1_000_000
+  - genotype_overview = study.job(:genotype_overview).run
+
+  - all_genes = genotype_overview.keys
+
+  - if threshold.nil?
+    - genes = genotype_overview.select("Mutation significance"){|ms| ms = ms.first; ms != nil and ms != "> 0.1"}.sort_by("Mutation significance"){|k,s| s = s.first; (s.nil? or s == "> 0.1") ? 1.0 : s.to_f}.collect{|k,v| k}
+  - else
+    - genes = genotype_overview.select("Mutation significance"){|ms| ms = ms.first; ms != nil and ms != "> 0.1" and ms.to_f < threshold}.sort_by("Mutation significance"){|k,s| s = s.first; (s.nil? or s == "> 0.1") ? 1.0 : s.to_f}.collect{|k,v| k}
+
+  - genes = genes[0..limit] if limit
+
+  - g.entities["Gene"].concat genes
+  - g.entities["Study"] << study
+  -# study_genes[study] = [all_genes, all_genes.collect{|g| genes.include?(g)? "YES" : "NO"}]
+  - study_genes[study] = [all_genes, all_genes.collect{|g| genes.include?(g)? "YES" : "NO"}]
+  - sig = genotype_overview.select(genes).slice("Mutation significance")
+  - study_significant_genes[study] = [sig.keys, sig.values]
+
+- gene_counts = Misc.counts(g.entities["Gene"])
+- g.entities["Gene"].uniq!
+
+- kb.register("mutated", study_genes, {})
+
+- kb.register("significantly_mutated", study_significant_genes, {})
+
+-#{{{ Ascetics
+-# g.add_aesthetic :nodes, :shape, :entity_type, {"Study" => "HEXAGON", "GOTerm" => "RECTANGLE"}
+-# g.add_aesthetic :nodes, :color, :entity_type, {"Study" => 'green', "GOTerm" => "YELLOW"}
+-# g.add_aesthetic :nodes, :borderWidth, :id, gene_counts
+-# g.add_aesthetic :edges, :weight, :Significant, {"YES" => 1, "NO" => 0.1}
+-# g.add_aesthetic :edges, :opacity, :Significant, {"YES" => 1, "NO" => 0.1}
+-# g.add_aesthetic :edges, :color, :database, {"mutated" => 'blue', 'go_bp' => 'yellow'}
+
+
+= tool :cytoscape, :graph => g, :id => "ICGC mutation overview", :static => false, :knowledgebase => dir 

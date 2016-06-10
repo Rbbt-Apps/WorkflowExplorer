@@ -1,0 +1,124 @@
+- studies = Rbbt.studies.find(:lib).glob("*").sort.collect{|file| File.basename file}
+- studies = studies.select{|s| s !~ /lung/i}
+- databases = %w(go_bp go_cc go_mf kegg nature reactome pfam interpro biocarta)
+- databases = %w(nature)
+- threshold = 0.00001
+- limit = 10
+
+%dl
+  - %w(nature).each do |database|
+    - dir = @step.file database
+    - log :enrichment_graph, "Producing enrichment graph for #{ database }"
+    %dt= database
+    %dd
+
+      - kb = Graph::KnowledgeBase.new dir
+      - kb.info["All"] = {:organism => "Hsa/jan2013"}
+
+      - g = Graph.new([kb, $knowledge_base])
+      - g.entities["Study"] = []
+      - g.entities["Ensembl Gene ID"] = []
+      - max = 100_000
+
+      - RbbtSemaphore.with_semaphore(10, "enrichment") do |sem|
+        - jobs = []
+        - studies.each do |study|
+          - Study.setup(study)
+          - next unless study.has_genotypes?
+          - next if study.cohort.metagenotype.length > max
+          - jobs << study.job(:mutation_pathway_enrichment, :database => database).fork(sem)
+        - jobs.each{|j| j.join }
+
+      - study_pathways = TSV.setup({}, :key_field => "Study", :fields => [], :type => :flat)
+      - study_pathways_top = TSV.setup({}, :key_field => "Study", :fields => [], :type => :flat)
+      - study_pathways_medium = TSV.setup({}, :key_field => "Study", :fields => [], :type => :flat)
+      - pathway_genes = TSV.setup({}, :key_field => nil, :fields => ["Ensembl Gene ID"], :type => :flat)
+      - pathway_field = nil
+
+      - top = 0.000_000_000_1
+      - medium = 0.000_1
+      - low = 0.01
+      - studies.each do |study|
+        - Study.setup(study)
+        - next unless study.has_genotypes?
+        - next if study.cohort.metagenotype.length > max
+        - enrichment = study.job(:mutation_pathway_enrichment, :database => database).run.select("p-value"){|p| p.first.to_f < low}.select("Ensembl Gene ID"){|g| g.length > 3}
+        - pathway_field = enrichment.key_field
+                          
+        - g.entities[pathway_field] ||= []
+        - g.entities[pathway_field].concat enrichment.keys
+        - genes = enrichment.slice("Ensembl Gene ID").values.flatten.uniq
+        - g.entities["Study"] << study
+        - next unless genes.length > 3
+        - g.entities["Ensembl Gene ID"].concat genes
+        - study_pathways[study] = enrichment.keys
+        - study_pathways_top[study] = enrichment.select("p-value"){|p| p.first.to_f < top}.keys
+        - study_pathways_medium[study] = enrichment.select("p-value"){|p| p.first.to_f < medium}.keys
+        
+        - enrichment.through do |pathway, value|
+          - gs = value["Ensembl Gene ID"]
+          - pathway_genes[pathway] = gs
+
+      - study_pathways.fields = [pathway_field]
+      - study_pathways_top.fields = [pathway_field]
+      - study_pathways_medium.fields = [pathway_field]
+      - pathway_genes.key_field = pathway_field
+
+      -#{{{ Pathway and gene selection
+      - pathway_study_counts = Misc.counts(study_pathways.slice(pathway_field).values.flatten)
+      - single_pathways = pathway_study_counts.select{|p,c| c == 1}.collect{|p,c| p}
+      - popular_pathways = pathway_study_counts.select{|p,c| c > 4}.collect{|p,c| p}
+      - pathway_gene_count = Misc.process_to_hash(pathway_genes.keys){ pathway_genes.values.collect{|l| l.length}}
+
+      - pathways = g.entities[pathway_field].uniq - single_pathways - popular_pathways
+
+      - g.entities[pathway_field] = pathways
+      - g.entities["Ensembl Gene ID"] = all_genes = pathway_genes.values_at(*pathways).compact.flatten.uniq
+
+      - study_genes = TSV.setup({}, :key_field => "Study", :fields => ["Ensembl Gene ID", "Score"], :type => :double)
+      - study_significant_genes = TSV.setup({}, :key_field => "Study", :fields => ["Ensembl Gene ID", "Score"], :type => :double)
+      - studies.each do |study|
+        - next unless study.has_genotypes?
+        - next if study.cohort.metagenotype.length > max
+        - genotype_overview = study.job(:genotype_overview).run
+        - genes_pvalues = genotype_overview.slice("Mutation significance").select(all_genes & genotype_overview.keys)
+        - genes = genes_pvalues.keys
+        - pvalues = genes_pvalues.values.collect{|p| p = p.flatten.first; (p.nil? or p == "> 0.1") ? 0 : Math.log(-Math.log(p.to_f))}
+        - study_genes[study] = [genes, pvalues]
+        - significant_gene_pvalues = genes_pvalues.select("Mutation significance"){|p| p = p.flatten.first; (p.nil? or p == "> 0.1") ? false : p.to_f < 0.01}
+        - genes = significant_gene_pvalues.keys
+        - pvalues = significant_gene_pvalues.values.collect{|p| p = p.flatten.first; (p.nil? or p == "> 0.1") ? 0 : Math.log(-Math.log(p.to_f))}
+        - study_significant_genes[study] = [genes, pvalues]
+
+      -#{{{ Databases
+      -# pathway_genes_database = Misc.snake_case(pathway_field + ' genes')
+      -# kb.register(pathway_genes_database, pathway_genes, {:update => true})
+      -# g.databases << pathway_genes_database
+
+      - study_genes_database = Misc.snake_case("Study genes")
+      - kb.register(study_genes_database, study_genes, {:update => true})
+      -# g.databases << study_genes_database
+ 
+      - study_significant_genes_database = Misc.snake_case("Study significant genes")
+      - kb.register(study_significant_genes_database, study_significant_genes, {:update => true})
+      -# g.databases << study_significant_genes_database
+
+      - study_pathway_database = Misc.snake_case("Study " + pathway_field)
+      - kb.register(study_pathway_database, study_pathways, {:update => true})
+
+      - study_pathway_database_top = Misc.snake_case("Study very significant " + pathway_field)
+      - kb.register(study_pathway_database_top, study_pathways_top, {:update => true})
+
+      - study_pathway_database_medium = Misc.snake_case("Study significant " + pathway_field)
+      - kb.register(study_pathway_database_medium, study_pathways_medium, {:update => true})
+
+
+      -#{{{ Ascetics
+      - g.add_aesthetic :nodes, :borderWidth, :id, pathway_study_counts
+      - g.add_aesthetic :nodes, :shape, :entity_type, {"Study" => "HEXAGON", pathway_field => "RECTANGLE"}
+      - g.add_aesthetic :nodes, :color, :entity_type, {"Study" => 'green'}
+      - g.add_aesthetic :edges, :color, :database, { study_genes_database => 'green'}
+      - g.add_aesthetic :edges, :opacity, "Score"
+      - g.add_aesthetic :edges, :weight, "Score"
+
+      = tool :cytoscape, :graph => g, :id => "ICGC #{ database } overview", :static => false, :knowledgebase => dir 

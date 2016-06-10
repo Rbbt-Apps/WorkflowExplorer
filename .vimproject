@@ -1,0 +1,20 @@
+WorkflowExplorer=/$PWD filter="*.rb *.haml *.js *.sass *.css *.R *.ru" {
+ etc=etc filter="*"{
+  entities
+  persit_properties
+  requires
+  workflows
+  app.d=app.d{
+   pre.rb
+   post.rb
+  }
+ }
+ lib=lib {
+  sinatra.rb
+ }
+ www=www{
+  views=views{
+   main.haml
+  }
+ }
+}
