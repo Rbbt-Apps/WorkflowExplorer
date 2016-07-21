@@ -1,0 +1,5 @@
+var
+studies
+tmp/
+www/views/public
+.sass-cache/
