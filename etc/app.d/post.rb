@@ -1,5 +1,3 @@
-require 'rbbt/entity/study'
-
 require 'kramdown'
 
 require 'rbbt'
